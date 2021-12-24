@@ -2,10 +2,17 @@ package inspect
 
 import (
 	"debug/elf"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+)
+
+var (
+	jsonOutput bool
 )
 
 func Command() *cobra.Command {
@@ -69,6 +76,15 @@ func infoAction(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("Type: %s\n", prettyType)
+
+	ver, modinfo := readGoVersionMod(exe)
+	if ver != "" {
+		fmt.Printf("Go version: %s\n", ver)
+	}
+	if modinfo != "" {
+		modinfo = strings.ReplaceAll(modinfo, "\n", "\n\t")
+		fmt.Printf("Go modules:\n\t%s\n", modinfo)
+	}
 }
 
 func listSectionsCommand() *cobra.Command {
@@ -78,6 +94,8 @@ func listSectionsCommand() *cobra.Command {
 		Run:   listSectionsAction,
 	}
 
+	cmd.Flags().BoolVarP(&jsonOutput, "json", "", false, "Show raw json ouput")
+
 	return &cmd
 }
 
@@ -85,6 +103,9 @@ func listSectionsAction(cmd *cobra.Command, args []string) {
 	if len(args) < 1 {
 		log.Fatalf("Usage: sections <file>")
 	}
+
+	jsonOut := json.NewEncoder(os.Stdout)
+	jsonOut.SetIndent("", "  ")
 
 	exe, err := elf.Open(args[0])
 	if err != nil {
@@ -94,7 +115,11 @@ func listSectionsAction(cmd *cobra.Command, args []string) {
 	defer exe.Close()
 
 	for _, s := range exe.Sections {
-		fmt.Printf("%s %s\n", s.Type, s.Name)
+		if jsonOutput {
+			jsonOut.Encode(s)
+		} else {
+			fmt.Printf("%s %s\n", s.Type, s.Name)
+		}
 	}
 }
 
