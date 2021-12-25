@@ -22,6 +22,7 @@ func Command() *cobra.Command {
 	}
 
 	cmd.AddCommand(listSymbolsCommand())
+	cmd.AddCommand(listFunctionsCommand())
 	cmd.AddCommand(infoCommand())
 	cmd.AddCommand(listSectionsCommand())
 
@@ -145,8 +146,51 @@ func listSymbolsAction(cmd *cobra.Command, args []string) {
 
 	defer exe.Close()
 
-	for _, s := range exe.Sections {
-		fmt.Printf("section: %s %s\n", s.Name, s.Type)
-		fmt.Printf("section: %+v\n", s)
+	symbols, err := exe.Symbols()
+	if err != nil {
+		log.Fatalf("Get symbols err: %s", err)
+	}
+	for _, sym := range symbols {
+		fmt.Printf("%+v\n", sym)
+	}
+}
+
+func listFunctionsCommand() *cobra.Command {
+	cmd := cobra.Command{
+		Use:   "functions <file>",
+		Short: "List functions",
+		Run:   listFunctionsAction,
+	}
+
+	return &cmd
+}
+
+func listFunctionsAction(cmd *cobra.Command, args []string) {
+	if len(args) < 1 {
+		log.Fatalf("Usage: functions <file>")
+	}
+
+	exe, err := elf.Open(args[0])
+	if err != nil {
+		log.Fatalf("Open elf err: %s", err)
+	}
+
+	defer exe.Close()
+
+	symbols, errSym := exe.Symbols()
+	dsyms, errDyn := exe.DynamicSymbols()
+
+	if errSym != nil && errDyn != nil {
+		log.Fatalf("Get symbols err: %s %s", errSym, errDyn)
+	}
+
+	symbols = append(symbols, dsyms...)
+
+	for _, sym := range symbols {
+		if elf.ST_TYPE(sym.Info) != elf.STT_FUNC {
+			continue
+		}
+
+		fmt.Printf("%016x %016x %s\n", sym.Value, sym.Size, sym.Name)
 	}
 }
