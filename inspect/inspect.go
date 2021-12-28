@@ -294,20 +294,32 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 		for _, pkgNode := range pkgs.children {
 			// // function definition
 			if pkgNode.entry.Tag == dwarf.TagSubprogram {
-				var matchedName bool
+				var (
+					funcName  string
+					startAddr uint64
+					endAddr   uint64
+				)
 				for _, field := range pkgNode.entry.Field {
 					if field.Attr == dwarf.AttrName {
-						funcName := field.Val.(string)
-						if strings.Contains(funcName, matchFuncName) {
-							fmt.Printf("%s\n", funcName)
-							matchedName = true
+						name := field.Val.(string)
+						if strings.Contains(name, matchFuncName) {
+							funcName = name
 						}
+					}
+					if field.Attr == dwarf.AttrLowpc {
+						startAddr = field.Val.(uint64)
+					}
+					if field.Attr == dwarf.AttrHighpc {
+						endAddr = field.Val.(uint64)
 					}
 				}
 
-				if !matchedName {
+				if funcName == "" {
 					continue
 				}
+
+				size := endAddr - startAddr
+				fmt.Printf("%016x %016x %s\n", startAddr, size, funcName)
 
 				for _, funcChild := range pkgNode.children {
 					// function argument
