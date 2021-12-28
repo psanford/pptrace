@@ -16,6 +16,7 @@ import (
 var (
 	jsonOutput bool
 	allFlag    bool
+	exactMatch bool
 )
 
 func Command() *cobra.Command {
@@ -28,6 +29,7 @@ func Command() *cobra.Command {
 	cmd.AddCommand(listSectionsCommand())
 	cmd.AddCommand(listSymbolsCommand())
 	cmd.AddCommand(listFunctionsCommand())
+	cmd.AddCommand(typesCommand())
 	cmd.AddCommand(functionArgsCommand())
 
 	return &cmd
@@ -208,13 +210,63 @@ func listFunctionsAction(cmd *cobra.Command, args []string) {
 func functionArgsCommand() *cobra.Command {
 	cmd := cobra.Command{
 		Use:   "args <file> [<function-name>|-all]",
-		Short: "Show available function variables",
+		Short: "Show available function args",
 		Run:   funcArgsAction,
 	}
 
 	cmd.Flags().BoolVarP(&allFlag, "all", "", false, "Show all functions")
+	cmd.Flags().BoolVarP(&exactMatch, "exact", "e", false, "Match on exact name")
 
 	return &cmd
+}
+
+func dwarfTree(r *dwarf.Reader) *dwarfNode {
+	var (
+		first = true
+		stack = make([]*dwarfNode, 0)
+		root  *dwarfNode
+	)
+
+	for {
+		entry, err := r.Next()
+		if err == io.EOF || entry == nil {
+			break
+		} else if err != nil {
+			log.Fatal(err)
+		}
+
+		if first {
+			first = false
+			root = &dwarfNode{
+				entry:     *entry,
+				children:  make([]*dwarfNode, 0),
+				offsetMap: make(map[dwarf.Offset]*dwarfNode),
+			}
+
+			stack = append(stack, root)
+		}
+
+		node := &dwarfNode{
+			entry: *entry,
+		}
+
+		root.offsetMap[entry.Offset] = node
+
+		// empty node denotes we're at the end of the parent's children
+		if entry.Children == false && entry.Offset == 0 && entry.Tag == 0 {
+			stack = stack[:len(stack)-1]
+			continue
+		}
+
+		parent := stack[len(stack)-1]
+		parent.children = append(parent.children, node)
+
+		if entry.Children {
+			stack = append(stack, node)
+		}
+	}
+
+	return root
 }
 
 func funcArgsAction(cmd *cobra.Command, args []string) {
@@ -243,53 +295,9 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 		log.Fatalf("read dwarf err: %s", err)
 	}
 
-	// var inFuncDef bool
-
 	r := dwarfInfo.Reader()
+	root := dwarfTree(r)
 
-	var (
-		first = true
-		stack = make([]*dwarfNode, 0)
-		root  *dwarfNode
-	)
-
-	for {
-		entry, err := r.Next()
-		if err == io.EOF || entry == nil {
-			break
-		} else if err != nil {
-			log.Fatal(err)
-		}
-
-		if first {
-			first = false
-			root = &dwarfNode{
-				entry:    *entry,
-				children: make([]*dwarfNode, 0),
-			}
-			stack = append(stack, root)
-		}
-
-		node := dwarfNode{
-			entry: *entry,
-		}
-
-		// empty node denotes we're at the end of the parent's children
-		if entry.Children == false && entry.Offset == 0 && entry.Tag == 0 {
-			stack = stack[:len(stack)-1]
-			continue
-		}
-
-		parent := stack[len(stack)-1]
-		parent.children = append(parent.children, &node)
-
-		if entry.Children {
-			stack = append(stack, &node)
-		}
-
-	}
-
-	r.Seek(0)
 	for _, pkgs := range root.children {
 		for _, pkgNode := range pkgs.children {
 			// // function definition
@@ -302,7 +310,11 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 				for _, field := range pkgNode.entry.Field {
 					if field.Attr == dwarf.AttrName {
 						name := field.Val.(string)
-						if strings.Contains(name, matchFuncName) {
+						if exactMatch {
+							if name == matchFuncName {
+								funcName = name
+							}
+						} else if strings.Contains(name, matchFuncName) {
 							funcName = name
 						}
 					}
@@ -335,11 +347,7 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 							}
 
 							if field.Attr == dwarf.AttrType {
-								r.Seek(field.Val.(dwarf.Offset))
-								typeEntry, err := r.Next()
-								if err != nil {
-									log.Fatal(err)
-								}
+								typeEntry := root.offsetMap[field.Val.(dwarf.Offset)].entry
 								for i := range typeEntry.Field {
 									if typeEntry.Field[i].Attr == dwarf.AttrName {
 										typeName = typeEntry.Field[i].Val.(string)
@@ -356,7 +364,118 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 	}
 }
 
+func typesCommand() *cobra.Command {
+	cmd := cobra.Command{
+		Use:   "types <file> [<type-name>|-all]",
+		Short: "Show available types",
+		Run:   typesAction,
+	}
+
+	cmd.Flags().BoolVarP(&allFlag, "all", "", false, "Show all types")
+	cmd.Flags().BoolVarP(&exactMatch, "exact", "e", false, "Match on exact name")
+
+	return &cmd
+}
+
+func typesAction(cmd *cobra.Command, args []string) {
+	if len(args) < 1 {
+		log.Fatalf("Usage: types <file> [<type-name>|-all]")
+	}
+
+	if len(args) < 2 && !allFlag {
+		log.Fatalf("Usage: types <file> [<type-name>|-all]")
+	}
+
+	var matchTypeName string
+	if !allFlag {
+		matchTypeName = args[1]
+	}
+
+	exe, err := elf.Open(args[0])
+	if err != nil {
+		log.Fatalf("Open elf err: %s", err)
+	}
+
+	defer exe.Close()
+
+	dwarfInfo, err := exe.DWARF()
+	if err != nil {
+		log.Fatalf("read dwarf err: %s", err)
+	}
+
+	r := dwarfInfo.Reader()
+	root := dwarfTree(r)
+
+	for _, pkgs := range root.children {
+		for _, pkgNode := range pkgs.children {
+			// // function definition
+
+			if pkgNode.entry.Tag == dwarf.TagTypedef {
+				var (
+					typeName string
+					typeInfo dwarf.Field
+				)
+				for _, field := range pkgNode.entry.Field {
+					if field.Attr == dwarf.AttrName {
+						name := field.Val.(string)
+						if exactMatch {
+							if name == matchTypeName {
+								typeName = name
+							}
+						} else if strings.Contains(name, matchTypeName) {
+							typeName = name
+						}
+					}
+					if field.Attr == dwarf.AttrType {
+						typeInfo = field
+					}
+				}
+
+				if typeName == "" {
+					continue
+				}
+
+				fmt.Printf("%s\n", typeName)
+
+				typedef := root.offsetMap[typeInfo.Val.(dwarf.Offset)]
+
+				for _, tChild := range typedef.children {
+
+					if tChild.entry.Tag == dwarf.TagMember {
+						var (
+							name        string
+							typeName    string
+							fieldOffset int64
+						)
+
+						for _, field := range tChild.entry.Field {
+							if field.Attr == dwarf.AttrName {
+								name = field.Val.(string)
+							}
+
+							if field.Attr == dwarf.AttrType {
+								typeEntry := root.offsetMap[field.Val.(dwarf.Offset)].entry
+								for i := range typeEntry.Field {
+									if typeEntry.Field[i].Attr == dwarf.AttrName {
+										typeName = typeEntry.Field[i].Val.(string)
+									}
+								}
+							}
+							if field.Attr == dwarf.AttrDataMemberLoc {
+								fieldOffset = field.Val.(int64)
+							}
+						}
+
+						fmt.Printf("%3d %32s\t%s\n", fieldOffset, name, typeName)
+					}
+				}
+			}
+		}
+	}
+}
+
 type dwarfNode struct {
-	entry    dwarf.Entry
-	children []*dwarfNode
+	entry     dwarf.Entry
+	children  []*dwarfNode
+	offsetMap map[dwarf.Offset]*dwarfNode
 }
