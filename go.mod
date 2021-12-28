@@ -1,4 +1,4 @@
-module github.com/psanford/ptrace
+module github.com/psanford/pptrace
 
 go 1.18
 

@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/psanford/ptrace/cmd"
+	"github.com/psanford/pptrace/cmd"
 )
 
 func main() {

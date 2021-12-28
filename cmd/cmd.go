@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"github.com/psanford/ptrace/inspect"
+	"github.com/psanford/pptrace/inspect"
 	"github.com/spf13/cobra"
 )
 
