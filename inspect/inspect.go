@@ -5,11 +5,11 @@ import (
 	"debug/elf"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strings"
 
+	"github.com/psanford/pptrace/internal/dwarfutil"
 	"github.com/spf13/cobra"
 )
 
@@ -83,6 +83,14 @@ func infoAction(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("Type: %s\n", prettyType)
+
+	firstLoad := true
+	for _, prog := range exe.Progs {
+		if prog.Type == elf.PT_LOAD && firstLoad {
+			fmt.Printf("Memory offset: 0x%016x\n", prog.Vaddr)
+			firstLoad = false
+		}
+	}
 
 	ver, modinfo := readGoVersionMod(exe)
 	if ver != "" {
@@ -220,55 +228,6 @@ func functionArgsCommand() *cobra.Command {
 	return &cmd
 }
 
-func dwarfTree(r *dwarf.Reader) *dwarfNode {
-	var (
-		first = true
-		stack = make([]*dwarfNode, 0)
-		root  *dwarfNode
-	)
-
-	for {
-		entry, err := r.Next()
-		if err == io.EOF || entry == nil {
-			break
-		} else if err != nil {
-			log.Fatal(err)
-		}
-
-		if first {
-			first = false
-			root = &dwarfNode{
-				entry:     *entry,
-				children:  make([]*dwarfNode, 0),
-				offsetMap: make(map[dwarf.Offset]*dwarfNode),
-			}
-
-			stack = append(stack, root)
-		}
-
-		node := &dwarfNode{
-			entry: *entry,
-		}
-
-		root.offsetMap[entry.Offset] = node
-
-		// empty node denotes we're at the end of the parent's children
-		if entry.Children == false && entry.Offset == 0 && entry.Tag == 0 {
-			stack = stack[:len(stack)-1]
-			continue
-		}
-
-		parent := stack[len(stack)-1]
-		parent.children = append(parent.children, node)
-
-		if entry.Children {
-			stack = append(stack, node)
-		}
-	}
-
-	return root
-}
-
 func funcArgsAction(cmd *cobra.Command, args []string) {
 	if len(args) < 1 {
 		log.Fatalf("Usage: args <file> [<function>|-all]")
@@ -296,18 +255,18 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 	}
 
 	r := dwarfInfo.Reader()
-	root := dwarfTree(r)
+	root := dwarfutil.Tree(r)
 
-	for _, pkgs := range root.children {
-		for _, pkgNode := range pkgs.children {
+	for _, pkgs := range root.Children {
+		for _, pkgNode := range pkgs.Children {
 			// // function definition
-			if pkgNode.entry.Tag == dwarf.TagSubprogram {
+			if pkgNode.Entry.Tag == dwarf.TagSubprogram {
 				var (
 					funcName  string
 					startAddr uint64
 					endAddr   uint64
 				)
-				for _, field := range pkgNode.entry.Field {
+				for _, field := range pkgNode.Entry.Field {
 					if field.Attr == dwarf.AttrName {
 						name := field.Val.(string)
 						if exactMatch {
@@ -333,21 +292,21 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 				size := endAddr - startAddr
 				fmt.Printf("%016x %016x %s\n", startAddr, size, funcName)
 
-				for _, funcChild := range pkgNode.children {
+				for _, funcChild := range pkgNode.Children {
 					// function argument
-					if funcChild.entry.Tag == dwarf.TagFormalParameter {
+					if funcChild.Entry.Tag == dwarf.TagFormalParameter {
 						var (
 							name     string
 							typeName string
 						)
 
-						for _, field := range funcChild.entry.Field {
+						for _, field := range funcChild.Entry.Field {
 							if field.Attr == dwarf.AttrName {
 								name = field.Val.(string)
 							}
 
 							if field.Attr == dwarf.AttrType {
-								typeEntry := root.offsetMap[field.Val.(dwarf.Offset)].entry
+								typeEntry := root.OffsetMap[field.Val.(dwarf.Offset)].Entry
 								for i := range typeEntry.Field {
 									if typeEntry.Field[i].Attr == dwarf.AttrName {
 										typeName = typeEntry.Field[i].Val.(string)
@@ -404,18 +363,18 @@ func typesAction(cmd *cobra.Command, args []string) {
 	}
 
 	r := dwarfInfo.Reader()
-	root := dwarfTree(r)
+	root := dwarfutil.Tree(r)
 
-	for _, pkgs := range root.children {
-		for _, pkgNode := range pkgs.children {
+	for _, pkgs := range root.Children {
+		for _, pkgNode := range pkgs.Children {
 			// // function definition
 
-			if pkgNode.entry.Tag == dwarf.TagTypedef {
+			if pkgNode.Entry.Tag == dwarf.TagTypedef {
 				var (
 					typeName string
 					typeInfo dwarf.Field
 				)
-				for _, field := range pkgNode.entry.Field {
+				for _, field := range pkgNode.Entry.Field {
 					if field.Attr == dwarf.AttrName {
 						name := field.Val.(string)
 						if exactMatch {
@@ -437,24 +396,24 @@ func typesAction(cmd *cobra.Command, args []string) {
 
 				fmt.Printf("%s\n", typeName)
 
-				typedef := root.offsetMap[typeInfo.Val.(dwarf.Offset)]
+				typedef := root.OffsetMap[typeInfo.Val.(dwarf.Offset)]
 
-				for _, tChild := range typedef.children {
+				for _, tChild := range typedef.Children {
 
-					if tChild.entry.Tag == dwarf.TagMember {
+					if tChild.Entry.Tag == dwarf.TagMember {
 						var (
 							name        string
 							typeName    string
 							fieldOffset int64
 						)
 
-						for _, field := range tChild.entry.Field {
+						for _, field := range tChild.Entry.Field {
 							if field.Attr == dwarf.AttrName {
 								name = field.Val.(string)
 							}
 
 							if field.Attr == dwarf.AttrType {
-								typeEntry := root.offsetMap[field.Val.(dwarf.Offset)].entry
+								typeEntry := root.OffsetMap[field.Val.(dwarf.Offset)].Entry
 								for i := range typeEntry.Field {
 									if typeEntry.Field[i].Attr == dwarf.AttrName {
 										typeName = typeEntry.Field[i].Val.(string)
@@ -472,10 +431,4 @@ func typesAction(cmd *cobra.Command, args []string) {
 			}
 		}
 	}
-}
-
-type dwarfNode struct {
-	entry     dwarf.Entry
-	children  []*dwarfNode
-	offsetMap map[dwarf.Offset]*dwarfNode
 }

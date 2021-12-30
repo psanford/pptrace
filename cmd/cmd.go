@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/psanford/pptrace/inspect"
+	"github.com/psanford/pptrace/trace"
 	"github.com/psanford/pptrace/tracerstate"
 	"github.com/spf13/cobra"
 )
@@ -15,6 +16,7 @@ func Execute() error {
 
 	rootCmd.AddCommand(inspect.Command())
 	rootCmd.AddCommand(tracerstate.Command())
+	rootCmd.AddCommand(trace.Command())
 
 	return rootCmd.Execute()
 }
