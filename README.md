@@ -1,4 +1,4 @@
-# ptrace: Peter's process (f)trace tool
+# pptrace: Peter's process (f)trace tool
 
 # LICENSE
 
