@@ -242,14 +242,18 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 		matchFuncName = args[1]
 	}
 
-	exe, err := elf.Open(args[0])
+	dwarfPath, err := dwarfutil.FindDwarf(args[0])
 	if err != nil {
-		log.Fatalf("Open elf err: %s", err)
+		log.Fatal(err)
 	}
 
-	defer exe.Close()
+	debugElf, err := elf.Open(dwarfPath)
+	if err != nil {
+		log.Fatalf("Open debug ELF %s err: %s", dwarfPath, err)
+	}
+	defer debugElf.Close()
 
-	dwarfInfo, err := exe.DWARF()
+	dwarfInfo, err := debugElf.DWARF()
 	if err != nil {
 		log.Fatalf("read dwarf err: %s", err)
 	}
@@ -259,7 +263,7 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 
 	for _, pkgs := range root.Children {
 		for _, pkgNode := range pkgs.Children {
-			// // function definition
+			// function definition
 			if pkgNode.Entry.Tag == dwarf.TagSubprogram {
 				var (
 					funcName  string
@@ -278,10 +282,24 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 						}
 					}
 					if field.Attr == dwarf.AttrLowpc {
-						startAddr = field.Val.(uint64)
+						switch v := field.Val.(type) {
+						case uint64:
+							startAddr = v
+						case int64:
+							startAddr = uint64(v)
+						default:
+							panic(fmt.Sprintf("unexpected type for AttrLowpc %T", field.Val))
+						}
 					}
 					if field.Attr == dwarf.AttrHighpc {
-						endAddr = field.Val.(uint64)
+						switch v := field.Val.(type) {
+						case uint64:
+							endAddr = v
+						case int64:
+							endAddr = uint64(v)
+						default:
+							panic(fmt.Sprintf("unexpected type for AttrHighpc %T", field.Val))
+						}
 					}
 				}
 
@@ -304,16 +322,9 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 							if field.Attr == dwarf.AttrName {
 								name = field.Val.(string)
 							}
-
-							if field.Attr == dwarf.AttrType {
-								typeEntry := root.OffsetMap[field.Val.(dwarf.Offset)].Entry
-								for i := range typeEntry.Field {
-									if typeEntry.Field[i].Attr == dwarf.AttrName {
-										typeName = typeEntry.Field[i].Val.(string)
-									}
-								}
-							}
 						}
+
+						typeName = findType(root, funcChild.Entry)
 
 						fmt.Printf("\t%s %s\n", name, typeName)
 					}
@@ -321,6 +332,41 @@ func funcArgsAction(cmd *cobra.Command, args []string) {
 			}
 		}
 	}
+}
+
+func findType(root *dwarfutil.Node, entry dwarf.Entry) string {
+	var typeName string
+	for _, field := range entry.Field {
+		if field.Attr == dwarf.AttrType {
+			typeEntry := root.OffsetMap[field.Val.(dwarf.Offset)].Entry
+			var modifier string
+			isStruct := typeEntry.Tag == dwarf.TagStructType
+			if isStruct {
+				modifier = modifier + "struct "
+			}
+
+			isPointer := typeEntry.Tag == dwarf.TagPointerType
+			if isPointer {
+				modifier = modifier + "*"
+			}
+
+			for i := range typeEntry.Field {
+				if typeEntry.Field[i].Attr == dwarf.AttrName {
+					typeName = typeEntry.Field[i].Val.(string)
+					if strings.HasPrefix(typeName, "*") {
+						// go pointer types have '*' in the name so don't
+						// append an additional one
+						modifier = strings.Replace(modifier, "*", "", 1)
+					}
+					return modifier + typeName
+				}
+			}
+			if typeName == "" {
+				return modifier + findType(root, typeEntry)
+			}
+		}
+	}
+	return ""
 }
 
 func typesCommand() *cobra.Command {
@@ -350,14 +396,18 @@ func typesAction(cmd *cobra.Command, args []string) {
 		matchTypeName = args[1]
 	}
 
-	exe, err := elf.Open(args[0])
+	dwarfPath, err := dwarfutil.FindDwarf(args[0])
 	if err != nil {
-		log.Fatalf("Open elf err: %s", err)
+		log.Fatal(err)
 	}
 
-	defer exe.Close()
+	debugElf, err := elf.Open(dwarfPath)
+	if err != nil {
+		log.Fatalf("Open debug ELF %s err: %s", dwarfPath, err)
+	}
+	defer debugElf.Close()
 
-	dwarfInfo, err := exe.DWARF()
+	dwarfInfo, err := debugElf.DWARF()
 	if err != nil {
 		log.Fatalf("read dwarf err: %s", err)
 	}
